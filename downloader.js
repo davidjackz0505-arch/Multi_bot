@@ -1,82 +1,105 @@
+const { exec } = require("yt-dlp-exec");
+const fs = require("fs");
 const axios = require("axios");
-const https = require("https");
+const ffmpegPath = require("ffmpeg-static");
 
-// 🕵️‍♂️ ANTI-BLOCK: User-Agent Rotator
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-];
+// 🚀 ULTRA FAST CLIENT
+const client = axios.create({ timeout: 15000 });
 
-const getRandomAgent = () =>
-  USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
-// 🚀 HIGH PERFORMANCE NETWORK AGENT
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: Infinity, // ⚡ Allow unlimited concurrent downloads
-  maxFreeSockets: 50,
-  timeout: 60000,
-});
-
-const client = axios.create({
-  httpsAgent,
-  timeout: 10000, // ⚡ 10s timeout (Fail fast, retry fast)
-});
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function getTikTokData(url) {
-  let attempts = 0;
-  const maxAttempts = 100; // 🔄 RETRY UP TO 100 TIMES
-
-  while (attempts < maxAttempts) {
+// ==========================================
+// ⚡ CORE: SINGLE-PASS DOWNLOADER (Fastest Response)
+// ==========================================
+// Fetches Metadata AND Downloads in a single command.
+async function singlePassDownload(url, outputPath, formatArgs) {
     try {
-      attempts++;
-      const apiUrl = `https://tikwm.com/api/?url=${url}&hd=1`;
+        console.log(`⚡ Processing: ${url}`);
+        const output = await exec(url, {
+            output: outputPath,
+            ...formatArgs,
+            printJson: true,        // Gets metadata while downloading
+            noWarnings: true,
+            noCallHome: true,
+            noPlaylist: true,
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            ffmpegLocation: ffmpegPath
+        });
 
-      if (attempts % 10 === 0)
-        console.log(`[Attempt ${attempts}] Fetching Metadata...`);
-
-      const response = await client.get(apiUrl, {
-        headers: { "User-Agent": getRandomAgent() },
-      });
-
-      if (response.data.code === 0) {
-        const data = response.data.data;
-        const cover = data.cover;
-        const author = data.author ? data.author.nickname : "TikTok User";
-        const title = data.title || "Video";
-
-        // 🧠 Smart Quality Select
-        let videoUrl = data.hdplay || data.play;
-        let sizeBytes = data.hdsize || data.size || 0;
-
-        // Auto-Downgrade if HD is missing or too big (>48MB)
-        let sizeMB = parseFloat((sizeBytes / (1024 * 1024)).toFixed(2));
-        if (sizeMB > 48) {
-          videoUrl = data.play;
-        }
-
+        const info = JSON.parse(output.stdout);
+        
         return {
-          status: "success",
-          videoUrl: videoUrl,
-          cover: cover,
-          author: author,
-          title: title,
-          sizeMB: sizeMB,
+            status: "success",
+            title: info.title || "Media",
+            author: info.uploader || "Artist",
+            cover: info.thumbnail || "",
+            filePath: outputPath
         };
-      }
-
-      await sleep(500); // Wait 0.5s before retry
     } catch (error) {
-      if (error.response && error.response.status === 404) break;
-      await sleep(500);
+        console.error("DL Error:", error.message);
+        return { status: "error", message: "Download failed or restricted." };
     }
-  }
-
-  return { status: "error", message: "Server busy. Please try again." };
 }
 
-module.exports = { getTikTokData, client };
+// ==========================================
+// 🎵 YOUTUBE (Auto-Audio / MP3)
+// ==========================================
+async function fetchYouTubeAudio(url, outputBase) {
+    const finalPath = `${outputBase}.mp3`;
+    
+    // Command flags for Best Audio
+    const flags = {
+        format: 'bestaudio',
+        extractAudio: true,
+        audioFormat: 'mp3',
+        audioQuality: '0', 
+    };
+
+    return singlePassDownload(url, outputBase, flags).then(res => {
+        // Fix filename if yt-dlp appended extension automatically
+        if (res.status === "success") res.filePath = finalPath;
+        return res;
+    });
+}
+
+// ==========================================
+// 🎥 TIKTOK (API + Fallback)
+// ==========================================
+async function fetchTikTok(url, outputPath) {
+    try {
+        // 1. Try Fast API first
+        const apiUrl = `https://tikwm.com/api/?url=${url}&hd=1`;
+        const response = await client.get(apiUrl);
+
+        if (response.data.code === 0) {
+            const data = response.data.data;
+            const writer = fs.createWriteStream(outputPath);
+            
+            const stream = await client({ url: data.hdplay || data.play, method: 'GET', responseType: 'stream' });
+            stream.data.pipe(writer);
+
+            return new Promise((resolve, reject) => {
+                writer.on('finish', () => resolve({
+                    status: "success",
+                    title: data.title || "TikTok",
+                    author: data.author.nickname,
+                    cover: data.cover,
+                    filePath: outputPath
+                }));
+                writer.on('error', reject);
+            });
+        }
+        throw new Error("API Limit");
+    } catch (e) {
+        // 2. Fallback to Engine
+        return singlePassDownload(url, outputPath, { format: 'best[ext=mp4]/best' });
+    }
+}
+
+// ==========================================
+// 📥 FACEBOOK / INSTAGRAM
+// ==========================================
+async function fetchUniversal(url, outputPath) {
+    // Force MP4 format for Telegram compatibility
+    return singlePassDownload(url, outputPath, { format: 'best[ext=mp4]/best' });
+}
+
+module.exports = { fetchTikTok, fetchYouTubeAudio, fetchUniversal };

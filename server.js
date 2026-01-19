@@ -16,10 +16,9 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 // DB
-mongoose
-  .connect(process.env.MONGO_URI, { maxPoolSize: 100 })
+mongoose.connect(process.env.MONGO_URI, { maxPoolSize: 100 })
   .then(() => console.log("✅ DB Connected"))
-  .catch((e) => console.log("❌ DB Error", e));
+  .catch(e => console.log("❌ DB Error", e));
 
 app.use(compression());
 app.use(bodyParser.json());
@@ -28,9 +27,7 @@ app.set("views", path.join(__dirname, "views"));
 app.use(express.static(path.join(__dirname, "public")));
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
-const DOMAIN =
-  process.env.RENDER_EXTERNAL_URL ||
-  `http://localhost:${process.env.PORT || 3000}`;
+const DOMAIN = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 3000}`;
 const PORT = process.env.PORT || 3000;
 
 // Bot
@@ -41,44 +38,25 @@ app.get("/", async (req, res) => {
   try {
     const [totalUsers, downloads, users, chartRaw] = await Promise.all([
       User.countDocuments(),
-      User.aggregate([
-        { $group: { _id: null, total: { $sum: "$downloads" } } },
-      ]),
+      // 🟢 UPDATED: Summing nested 'downloads.total'
+      User.aggregate([{ $group: { _id: null, total: { $sum: "$downloads.total" } } }]),
       User.find().sort({ lastActive: -1 }).limit(10).lean(),
       User.aggregate([
         { $match: { joinedAt: { $gte: new Date(Date.now() - 7 * 86400000) } } },
-        {
-          $group: {
-            _id: { $dateToString: { format: "%Y-%m-%d", date: "$joinedAt" } },
-            count: { $sum: 1 },
-          },
-        },
-        { $sort: { _id: 1 } },
-      ]),
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$joinedAt" } }, count: { $sum: 1 } } },
+        { $sort: { _id: 1 } }
+      ])
     ]);
 
     res.render("dashboard", {
-      stats: {
-        downloads: downloads[0]?.total || 0,
-        total_users: totalUsers,
-        active_now: state.userList.length,
-      },
-      chartData: {
-        labels: chartRaw.map((d) => d._id),
-        values: chartRaw.map((d) => d.count),
-      },
+      stats: { downloads: downloads[0]?.total || 0, total_users: totalUsers, active_now: state.userList.length },
+      chartData: { labels: chartRaw.map(d => d._id), values: chartRaw.map(d => d.count) },
       users: state.userList,
       dbUsers: users,
-      uptime: process.uptime(),
+      uptime: process.uptime()
     });
   } catch (e) {
-    res.render("dashboard", {
-      stats: { downloads: 0, total_users: 0, active_now: 0 },
-      chartData: { labels: [], values: [] },
-      users: [],
-      dbUsers: [],
-      uptime: 0,
-    });
+    res.render("dashboard", { stats: { downloads: 0, total_users: 0, active_now: 0 }, chartData: { labels: [], values: [] }, users: [], dbUsers: [], uptime: 0 });
   }
 });
 
